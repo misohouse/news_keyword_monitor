@@ -97,3 +97,21 @@ export function formatDate(dateStr) {
     return dateStr;
   }
 }
+
+/**
+ * 기사 발행일이 최근 N시간(기본 24시간) 이내인지 확인
+ */
+export function isWithinPastHours(dateStr, hours = 24) {
+  if (!dateStr) return false;
+  try {
+    const time = new Date(dateStr).getTime();
+    if (isNaN(time)) return false;
+    const now = Date.now();
+    const maxAgeMs = hours * 60 * 60 * 1000;
+    const diff = now - time;
+    // 시계 오차(-15분 허용) 및 최근 N시간 이내 검사
+    return diff >= -15 * 60 * 1000 && diff <= maxAgeMs;
+  } catch {
+    return false;
+  }
+}

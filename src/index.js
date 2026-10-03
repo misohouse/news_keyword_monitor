@@ -280,7 +280,7 @@ ${escapeHtml(kwText)}`;
     return;
   }
 
-  // 6. /테스트, /test
+  // 7. /테스트, /test
   if (text === "/테스트" || text === "/test") {
     const keywords = await getKeywords(env);
     if (keywords.length === 0) {
@@ -292,17 +292,22 @@ ${escapeHtml(kwText)}`;
     }
 
     await sendTelegramMessage(
-      `🔍 <b>뉴스 수집 테스트를 시작합니다...</b>\n(대상 키워드: ${escapeHtml(keywords.join(", "))})`,
+      `🔍 <b>최근 24시간 뉴스 수집 테스트를 시작합니다...</b>\n• 대상 키워드: ${escapeHtml(keywords.join(", "))}\n• 수집 기준: 최근 24시간 이내 기사 (최대 3건)`,
       env
     );
 
-    const result = await checkAndNotify(env, { maxPerKeyword: 2 });
-    await sendTelegramMessage(
-      `🏁 <b>테스트 완료!</b>\n• 검사한 기사: ${result.totalChecked}건\n• 새로 발송한 기사: ${result.totalSent}건${
-        result.errors.length > 0 ? `\n• 오류: ${escapeHtml(result.errors.join("; "))}` : ""
-      }`,
-      env
-    );
+    const result = await checkAndNotify(env, { isTest: true, maxTotal: 3, maxAgeHours: 24 });
+    if (result.totalSent === 0) {
+      await sendTelegramMessage(
+        `🏁 <b>테스트 완료</b>\n최근 24시간 이내에 발행된 뉴스가 없습니다.\n새 뉴스가 등록되면 설정하신 주기에 맞춰 자동으로 알림을 보내드립니다.`,
+        env
+      );
+    } else {
+      await sendTelegramMessage(
+        `🏁 <b>테스트 완료!</b>\n최근 24시간 이내 기사 ${result.totalSent}건을 전송했습니다.`,
+        env
+      );
+    }
     return;
   }
 

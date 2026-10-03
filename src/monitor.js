@@ -1,7 +1,7 @@
 import { fetchNaverNews } from "./naver.js";
 import { fetchGoogleNews } from "./google.js";
 import { sendArticleNotification } from "./telegram.js";
-import { normalizeTitle, sleep } from "./utils.js";
+import { normalizeTitle, sleep, isWithinPastHours } from "./utils.js";
 
 const KEYWORDS_KV_KEY = "config:keywords";
 const INTERVAL_KV_KEY = "config:interval_minutes";
@@ -109,11 +109,15 @@ export async function clearKeywords(env) {
 /**
  * 뉴스 검색 및 새 뉴스 알림 발송 메인 루프
  * @param {object} env
- * @param {object} options
+ * @param {object} options - { isTest: boolean, maxTotal: number, maxAgeHours: number, maxPerKeyword: number }
  * @returns {Promise<{ totalChecked: number, totalSent: number, errors: string[] }>}
  */
 export async function checkAndNotify(env, options = {}) {
+  const isTest = options.isTest || false;
+  const maxTotal = options.maxTotal || (isTest ? 3 : 999);
   const maxPerKeyword = options.maxPerKeyword || 3;
+  const maxAgeHours = options.maxAgeHours || (isTest ? 24 : 48); // 테스트: 24시간, 일반: 48시간
+
   const keywords = await getKeywords(env);
 
   if (keywords.length === 0) {
@@ -124,8 +128,11 @@ export async function checkAndNotify(env, options = {}) {
   let totalSent = 0;
   let totalChecked = 0;
   const errors = [];
+  const seenTitlesInRun = new Set();
 
   for (const keyword of keywords) {
+    if (totalSent >= maxTotal) break;
+
     try {
       // 1. 네이버 & 구글 뉴스 병렬 호출
       const [naverNews, googleNews] = await Promise.all([
@@ -139,21 +146,35 @@ export async function checkAndNotify(env, options = {}) {
       let sentForThisKeyword = 0;
 
       for (const article of candidateList) {
-        if (sentForThisKeyword >= maxPerKeyword) {
-          break; // 키워드당 한 주기에 최대 개수 초과 시 스킵 (도배 방지)
+        if (totalSent >= maxTotal || sentForThisKeyword >= maxPerKeyword) {
+          break;
         }
 
-        const urlKey = `sent:url:${article.link}`;
-        const titleKey = `sent:title:${normalizeTitle(article.title)}`;
-
-        // 중복 검사: URL 또는 유사 제목이 이미 발송되었는지 확인
-        const [isUrlSent, isTitleSent] = await Promise.all([
-          env.NEWS_KV.get(urlKey),
-          env.NEWS_KV.get(titleKey),
-        ]);
-
-        if (isUrlSent || isTitleSent) {
+        // 1. 시간 필터: 최근 N시간(테스트: 24시간) 이내에 발행된 기사만 통과
+        if (!isWithinPastHours(article.pubDate, maxAgeHours)) {
           continue;
+        }
+
+        const normTitle = normalizeTitle(article.title);
+        // 동일 회차 내 네이버/구글 중복 전송 방지
+        if (seenTitlesInRun.has(normTitle)) {
+          continue;
+        }
+        seenTitlesInRun.add(normTitle);
+
+        const urlKey = `sent:url:${article.link}`;
+        const titleKey = `sent:title:${normTitle}`;
+
+        // 일반 모니터링 모드일 때는 과거 전송 이력 검사 (테스트 모드는 최근 24시간 기사 보여줌)
+        if (!isTest) {
+          const [isUrlSent, isTitleSent] = await Promise.all([
+            env.NEWS_KV.get(urlKey),
+            env.NEWS_KV.get(titleKey),
+          ]);
+
+          if (isUrlSent || isTitleSent) {
+            continue;
+          }
         }
 
         // 새 뉴스 전송
