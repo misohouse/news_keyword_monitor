@@ -70,3 +70,30 @@ export function truncateSummary(text = "", maxLength = 120) {
   if (cleaned.length <= maxLength) return cleaned;
   return cleaned.slice(0, maxLength).replace(/\s+[^\s]*$/, "") + "...";
 }
+
+/**
+ * 기사 발행일시 포맷팅 (한국 시간 KST 기준: YYYY.MM.DD HH:mm)
+ */
+export function formatDate(dateStr) {
+  if (!dateStr) return "";
+  try {
+    const d = new Date(dateStr);
+    if (isNaN(d.getTime())) return dateStr;
+
+    const formatter = new Intl.DateTimeFormat("ko-KR", {
+      timeZone: "Asia/Seoul",
+      year: "numeric",
+      month: "2-digit",
+      day: "2-digit",
+      hour: "2-digit",
+      minute: "2-digit",
+      hour12: false,
+    });
+
+    const parts = formatter.formatToParts(d);
+    const getPart = (type) => parts.find((p) => p.type === type)?.value || "";
+    return `${getPart("year")}.${getPart("month")}.${getPart("day")} ${getPart("hour")}:${getPart("minute")}`;
+  } catch {
+    return dateStr;
+  }
+}

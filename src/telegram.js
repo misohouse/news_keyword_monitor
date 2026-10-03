@@ -1,4 +1,4 @@
-import { escapeHtml, truncateSummary } from "./utils.js";
+import { escapeHtml, truncateSummary, formatDate } from "./utils.js";
 
 /**
  * 텔레그램 메시지 발송 기본 함수
@@ -33,11 +33,23 @@ export async function sendTelegramMessage(text, env, options = {}) {
 }
 
 /**
- * 뉴스 알림 메시지 발송 (간결한 4단계 포맷: 키워드, 제목, 주요내용 2~3줄, 링크)
+ * 뉴스 알림 메시지 발송 (키워드, 제목, 일시, 주요내용 2~3줄, 링크)
  */
 export async function sendArticleNotification(article, keyword, env) {
-  let message = `🔔 <b>[${escapeHtml(keyword)}]</b> (${article.source})\n\n`;
-  message += `📰 <b>${escapeHtml(article.title)}</b>\n\n`;
+  let sourceText = article.source;
+  if (article.pressName) {
+    sourceText = `${article.source} · ${article.pressName}`;
+  }
+
+  let message = `🔔 <b>[${escapeHtml(keyword)}]</b> (${escapeHtml(sourceText)})\n\n`;
+  message += `📰 <b>${escapeHtml(article.title)}</b>\n`;
+
+  const dateFormatted = formatDate(article.pubDate);
+  if (dateFormatted) {
+    message += `🕒 <code>${escapeHtml(dateFormatted)}</code>\n\n`;
+  } else {
+    message += `\n`;
+  }
 
   const summary = truncateSummary(article.description, 110);
   if (summary) {
