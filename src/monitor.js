@@ -4,7 +4,55 @@ import { sendArticleNotification } from "./telegram.js";
 import { normalizeTitle, sleep } from "./utils.js";
 
 const KEYWORDS_KV_KEY = "config:keywords";
+const INTERVAL_KV_KEY = "config:interval_minutes";
+const LAST_RUN_KV_KEY = "state:last_run_timestamp";
+const DEFAULT_INTERVAL_MINUTES = 5;
 const TTL_7_DAYS = 604800; // 7일 (초)
+
+/**
+ * 모니터링 주기(분) 조회 (기본값: 5분)
+ */
+export async function getIntervalMinutes(env) {
+  try {
+    const val = await env.NEWS_KV.get(INTERVAL_KV_KEY);
+    const parsed = parseInt(val, 10);
+    if (!isNaN(parsed) && parsed >= 1) {
+      return parsed;
+    }
+  } catch (err) {
+    console.error("Failed to get interval from KV:", err);
+  }
+  return DEFAULT_INTERVAL_MINUTES;
+}
+
+/**
+ * 모니터링 주기(분) 설정
+ */
+export async function setIntervalMinutes(minutes, env) {
+  const m = Math.max(1, Math.min(1440, parseInt(minutes, 10) || DEFAULT_INTERVAL_MINUTES));
+  await env.NEWS_KV.put(INTERVAL_KV_KEY, m.toString());
+  return m;
+}
+
+/**
+ * 설정된 간격에 따라 지금 실행해야 하는지 검사
+ */
+export async function shouldRunNow(env) {
+  const now = Date.now();
+  const intervalMinutes = await getIntervalMinutes(env);
+  const intervalMs = intervalMinutes * 60 * 1000;
+
+  const lastRunStr = await env.NEWS_KV.get(LAST_RUN_KV_KEY);
+  const lastRun = lastRunStr ? parseInt(lastRunStr, 10) : 0;
+
+  // 크론 지연 오차 감안 (15초 허용)
+  if (lastRun && (now - lastRun < intervalMs - 15000)) {
+    return false;
+  }
+
+  await env.NEWS_KV.put(LAST_RUN_KV_KEY, now.toString());
+  return true;
+}
 
 /**
  * 등록된 키워드 목록 조회

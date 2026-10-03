@@ -3,6 +3,9 @@ import {
   addKeywords,
   removeKeywords,
   clearKeywords,
+  getIntervalMinutes,
+  setIntervalMinutes,
+  shouldRunNow,
   checkAndNotify,
 } from "./monitor.js";
 import { sendTelegramMessage } from "./telegram.js";
@@ -10,10 +13,15 @@ import { escapeHtml } from "./utils.js";
 
 export default {
   /**
-   * Cron Trigger 핸들러 (5분마다 실행)
+   * Cron Trigger 핸들러 (매분 실행되어 설정된 간격 도달 시 뉴스 검사)
    */
   async scheduled(event, env, ctx) {
-    ctx.waitUntil(checkAndNotify(env));
+    ctx.waitUntil((async () => {
+      const isDue = await shouldRunNow(env);
+      if (isDue) {
+        await checkAndNotify(env);
+      }
+    })());
   },
 
   /**
@@ -67,7 +75,10 @@ export default {
     }
 
     // 5. 기본 상태 페이지
-    const keywords = await getKeywords(env);
+    const [keywords, intervalMinutes] = await Promise.all([
+      getKeywords(env),
+      getIntervalMinutes(env),
+    ]);
     const html = `<!DOCTYPE html>
 <html lang="ko">
 <head>
@@ -87,7 +98,7 @@ export default {
   </style>
 </head>
 <body>
-  <h1>📢 뉴스 키워드 모니터링 <span class="badge">정상 가동 중</span></h1>
+  <h1>📢 뉴스 키워드 모니터링 <span class="badge">${intervalMinutes}분마다 자동 감시 중</span></h1>
   <div class="card">
     <h3 style="margin-top:0;">📋 현재 감시 중인 키워드 (${keywords.length}개)</h3>
     <div class="keywords">
@@ -105,6 +116,7 @@ export default {
       <li><code>/추가 &lt;키워드&gt;</code> - 키워드 등록 (쉼표로 여러 개 가능)</li>
       <li><code>/삭제 &lt;키워드&gt;</code> - 키워드 삭제</li>
       <li><code>/목록</code> - 등록된 키워드 확인</li>
+      <li><code>/주기 &lt;분&gt;</code> - 모니터링 시간 간격 변경 (현재: ${intervalMinutes}분)</li>
       <li><code>/테스트</code> - 즉시 뉴스 수집 및 알림 테스트</li>
     </ul>
     <a href="/test-check" class="btn">지금 뉴스 수집 수동 테스트</a>
@@ -138,12 +150,15 @@ async function handleTelegramUpdate(message, env) {
 
   // 1. /start, /help, /도움말
   if (text.startsWith("/start") || text.startsWith("/help") || text.startsWith("/도움말")) {
-    const keywords = await getKeywords(env);
+    const [keywords, intervalMinutes] = await Promise.all([
+      getKeywords(env),
+      getIntervalMinutes(env),
+    ]);
     const kwText = keywords.length > 0 ? keywords.join(", ") : "없음";
 
     const reply = `👋 <b>안녕하세요! 뉴스 키워드 모니터링 봇입니다.</b>
 
-구글 뉴스 RSS와 네이버 뉴스 API를 통해 5분마다 새 뉴스를 찾아 알림을 보내드립니다.
+구글 뉴스 RSS와 네이버 뉴스 API를 통해 <b>${intervalMinutes}분마다</b> 새 뉴스를 찾아 알림을 보내드립니다.
 
 📌 <b>명령어 사용법:</b>
 • <code>/추가 &lt;키워드&gt;</code> : 키워드 등록
@@ -151,9 +166,11 @@ async function handleTelegramUpdate(message, env) {
 • <code>/삭제 &lt;키워드&gt;</code> : 키워드 삭제
   <i>(예: /삭제 반도체)</i>
 • <code>/목록</code> : 현재 감시 중인 키워드 확인
+• <code>/주기 &lt;분&gt;</code> : 모니터링 간격 변경 (예: /주기 10)
 • <code>/테스트</code> : 지금 즉시 뉴스 검색 및 알림 테스트
 • <code>/전체삭제</code> : 등록된 모든 키워드 일괄 삭제
 
+⏱️ <b>현재 모니터링 주기:</b> ${intervalMinutes}분마다
 📋 <b>현재 등록된 키워드:</b>
 ${escapeHtml(kwText)}`;
 
@@ -227,7 +244,36 @@ ${escapeHtml(kwText)}`;
     return;
   }
 
-  // 5. /전체삭제, /clear
+  // 5. /주기 <분>, /간격 <분>, /interval <분>
+  if (text.startsWith("/주기") || text.startsWith("/간격") || text.startsWith("/interval")) {
+    const rawArgs = text.replace(/^\/(주기|간격|interval)/, "").trim();
+    if (!rawArgs) {
+      const current = await getIntervalMinutes(env);
+      await sendTelegramMessage(
+        `⏱️ <b>현재 모니터링 주기: ${current}분마다 실행 중입니다.</b>\n\n주기를 변경하시려면 분 단위 숫자를 함께 입력해 주세요.\n• 예: <code>/주기 10</code> (10분마다 실행)\n• 예: <code>/주기 30</code> (30분마다 실행)\n• 예: <code>/주기 1</code> (1분마다 실행)`,
+        env
+      );
+      return;
+    }
+
+    const minutes = parseInt(rawArgs, 10);
+    if (isNaN(minutes) || minutes < 1 || minutes > 1440) {
+      await sendTelegramMessage(
+        "⚠️ 올바른 시간(분)을 입력해 주세요. (1분 ~ 1440분 사이의 숫자)\n예: <code>/주기 10</code>",
+        env
+      );
+      return;
+    }
+
+    const updated = await setIntervalMinutes(minutes, env);
+    await sendTelegramMessage(
+      `⏱️ <b>모니터링 주기가 [${updated}분]으로 변경되었습니다!</b>\n앞으로 ${updated}분 간격으로 새 뉴스를 자동 확인합니다.`,
+      env
+    );
+    return;
+  }
+
+  // 6. /전체삭제, /clear
   if (text === "/전체삭제" || text === "/clear") {
     await clearKeywords(env);
     await sendTelegramMessage("🧹 <b>모든 키워드가 삭제되었습니다.</b>", env);
