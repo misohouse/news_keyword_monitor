@@ -43,3 +43,30 @@ export function normalizeTitle(title = "") {
 export function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
+
+/**
+ * 키워드가 텍스트 내에 정확하게 순서대로 포함되어 있는지 확인
+ * (단어 사이의 불필요한 개입 차단 및 조사 처리, 유사 이름(조윤우 등) 오매칭 방지)
+ */
+export function matchesKeyword(text = "", keyword = "") {
+  if (!text || !keyword) return false;
+  const words = keyword
+    .trim()
+    .split(/\s+/)
+    .map((w) => w.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"));
+
+  // 한국어 조사 및 호칭 허용 (조윤이, 조윤의, 조윤씨 등은 매칭하고, 조윤우/조윤수는 차단)
+  const particles = "(?:이|가|을|를|은|는|의|와|과|도|로|으로|에|에게|에서|씨|씨가|씨는|씨의|씨와|님|님이|님은|들|들도|들을|들의|들에게)?";
+  const pattern = new RegExp(`(?<![가-힣a-zA-Z0-9])${words.join("\\s+")}${particles}(?![가-힣a-zA-Z0-9])`, "i");
+  return pattern.test(text);
+}
+
+/**
+ * 2~3줄 분량(약 120자) 깔끔한 요약 생성
+ */
+export function truncateSummary(text = "", maxLength = 120) {
+  if (!text) return "";
+  const cleaned = stripHtml(text).replace(/\s+/g, " ").trim();
+  if (cleaned.length <= maxLength) return cleaned;
+  return cleaned.slice(0, maxLength).replace(/\s+[^\s]*$/, "") + "...";
+}
