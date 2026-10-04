@@ -3,6 +3,9 @@ import {
   addKeywords,
   removeKeywords,
   clearKeywords,
+  getChannels,
+  addChannel,
+  clearChannels,
   getIntervalMinutes,
   setIntervalMinutes,
   shouldRunNow,
@@ -34,8 +37,17 @@ export default {
     if (url.pathname === "/webhook" && request.method === "POST") {
       try {
         const update = await request.json();
-        if (update.message && update.message.text) {
+
+        // 봇이 채널/그룹에 초대되거나 관리자로 지정되었을 때 자동 감지
+        if (update.my_chat_member) {
+          ctx.waitUntil(handleChatMemberUpdate(update.my_chat_member, env));
+          return new Response("OK", { status: 200 });
+        }
+
+        // 일반 메시지 또는 전달(Forward)된 메시지 수신
+        if (update.message) {
           ctx.waitUntil(handleTelegramUpdate(update.message, env));
+          return new Response("OK", { status: 200 });
         }
       } catch (err) {
         console.error("Webhook processing error:", err);
@@ -46,8 +58,9 @@ export default {
     // 2. 텔레그램 웹훅 자동 등록 엔드포인트
     if (url.pathname === "/setup-webhook") {
       const webhookUrl = `${url.origin}/webhook`;
+      const allowedUpdates = JSON.stringify(["message", "my_chat_member", "channel_post"]);
       const tgRes = await fetch(
-        `https://api.telegram.org/bot${env.TELEGRAM_BOT_TOKEN}/setWebhook?url=${encodeURIComponent(webhookUrl)}`
+        `https://api.telegram.org/bot${env.TELEGRAM_BOT_TOKEN}/setWebhook?url=${encodeURIComponent(webhookUrl)}&allowed_updates=${encodeURIComponent(allowedUpdates)}`
       );
       const data = await tgRes.json();
       return new Response(JSON.stringify(data, null, 2), {
@@ -148,31 +161,52 @@ async function handleTelegramUpdate(message, env) {
     return;
   }
 
+  // 0. 비공개 채널에서 전달(Forward)된 메시지 감지 시 채널 자동 등록!
+  const forwardChat = message.forward_from_chat || message.forward_origin?.chat;
+  if (forwardChat && (forwardChat.type === "channel" || forwardChat.type === "supergroup" || forwardChat.type === "group")) {
+    const channelId = forwardChat.id.toString();
+    const channelTitle = forwardChat.title || "비공개 채널";
+    await addChannel(channelId, channelTitle, env);
+
+    await sendTelegramMessage(
+      `🎉 <b>비공개 채널이 수신 대상으로 자동 등록되었습니다!</b>\n\n📢 <b>채널명:</b> ${escapeHtml(channelTitle)}\n🆔 <b>채널 ID:</b> <code>${channelId}</code>\n\n앞으로 새 뉴스가 나오면 <b>내 개인방과 [${escapeHtml(channelTitle)}] 채널로 동시에</b> 알림이 발송됩니다!\n\n<i>(※ 아직 봇을 채널의 관리자로 초대하지 않으셨다면, 채널 관리자 목록에서 이 봇을 관리자로 추가해 주세요!)</i>`,
+      env
+    );
+    return;
+  }
+
   // 1. /start, /help, /도움말
   if (text.startsWith("/start") || text.startsWith("/help") || text.startsWith("/도움말")) {
-    const [keywords, intervalMinutes] = await Promise.all([
+    const [keywords, intervalMinutes, channels] = await Promise.all([
       getKeywords(env),
       getIntervalMinutes(env),
+      getChannels(env),
     ]);
     const kwText = keywords.length > 0 ? keywords.join(", ") : "없음";
+    const channelText = channels.length > 0
+      ? channels.map((c) => `📢 ${c.title}`).join(", ")
+      : "없음 (개인방으로만 수신)";
 
     const reply = `👋 <b>안녕하세요! 뉴스 키워드 모니터링 봇입니다.</b>
 
 구글 뉴스 RSS와 네이버 뉴스 API를 통해 <b>${intervalMinutes}분마다</b> 새 뉴스를 찾아 알림을 보내드립니다.
 
 📌 <b>명령어 사용법:</b>
-• <code>/추가 &lt;키워드&gt;</code> : 키워드 등록
-  <i>(예: /추가 인공지능, 반도체)</i>
-• <code>/삭제 &lt;키워드&gt;</code> : 키워드 삭제
-  <i>(예: /삭제 반도체)</i>
+• <code>/추가 &lt;키워드&gt;</code> : 키워드 등록 (예: /추가 인공지능)
+• <code>/삭제 &lt;키워드&gt;</code> : 키워드 삭제 (예: /삭제 반도체)
 • <code>/목록</code> : 현재 감시 중인 키워드 확인
 • <code>/주기 &lt;분&gt;</code> : 모니터링 간격 변경 (예: /주기 10)
+• <code>/채널목록</code> : 알림이 전송되는 채널 및 수신처 확인
+• <code>/채널삭제</code> : 등록된 모든 채널 삭제
 • <code>/테스트</code> : 지금 즉시 뉴스 검색 및 알림 테스트
 • <code>/전체삭제</code> : 등록된 모든 키워드 일괄 삭제
 
+💡 <b>비공개 채널 추가 방법:</b>
+비공개 채널의 글을 이 봇에게 <b>전달(Forward)</b>하거나, 채널 관리자로 이 봇을 초대하면 자동 등록됩니다!
+
 ⏱️ <b>현재 모니터링 주기:</b> ${intervalMinutes}분마다
-📋 <b>현재 등록된 키워드:</b>
-${escapeHtml(kwText)}`;
+📋 <b>현재 등록된 키워드:</b> ${escapeHtml(kwText)}
+📢 <b>연동된 채널:</b> ${escapeHtml(channelText)}`;
 
     await sendTelegramMessage(reply, env);
     return;
@@ -273,14 +307,39 @@ ${escapeHtml(kwText)}`;
     return;
   }
 
-  // 6. /전체삭제, /clear
+  // 6. /채널목록, /channels
+  if (text === "/채널목록" || text === "/channels") {
+    const channels = await getChannels(env);
+    if (channels.length === 0) {
+      await sendTelegramMessage(
+        `📋 <b>현재 알림 수신 대상:</b>\n• 👤 내 개인 알림방 (기본)\n\n<i>등록된 채널이 없습니다. 비공개 채널의 글을 이 봇에게 전달(Forward)하거나 봇을 채널 관리자로 추가해 보세요!</i>`,
+        env
+      );
+    } else {
+      const listStr = channels.map((c, idx) => `${idx + 1}. 📢 <b>${escapeHtml(c.title)}</b> (<code>${c.id}</code>)`).join("\n");
+      await sendTelegramMessage(
+        `📋 <b>현재 알림 수신 대상:</b>\n• 👤 내 개인 알림방 (기본)\n${listStr}\n\n<i>채널을 삭제하시려면 <code>/채널삭제</code> 를 입력하세요.</i>`,
+        env
+      );
+    }
+    return;
+  }
+
+  // 7. /채널삭제
+  if (text === "/채널삭제") {
+    await clearChannels(env);
+    await sendTelegramMessage("🧹 <b>모든 채널이 수신 대상에서 삭제되었습니다.</b> (내 개인 알림방으로만 발송됩니다)", env);
+    return;
+  }
+
+  // 8. /전체삭제, /clear
   if (text === "/전체삭제" || text === "/clear") {
     await clearKeywords(env);
     await sendTelegramMessage("🧹 <b>모든 키워드가 삭제되었습니다.</b>", env);
     return;
   }
 
-  // 7. /테스트, /test
+  // 9. /테스트, /test
   if (text === "/테스트" || text === "/test") {
     const keywords = await getKeywords(env);
     if (keywords.length === 0) {
@@ -311,9 +370,33 @@ ${escapeHtml(kwText)}`;
     return;
   }
 
-  // 7. 슬래시 없이 키워드만 보냈을 때 친절한 안내
+  // 10. 슬래시 없이 키워드만 보냈을 때 친절한 안내
   await sendTelegramMessage(
     `💡 <b>"${escapeHtml(text)}"</b> 키워드를 등록하시겠습니까?\n\n등록을 원하시면 아래 명령어를 입력해 주세요:\n<code>/추가 ${escapeHtml(text)}</code>\n\n모든 명령어는 <code>/도움말</code> 을 참고하세요.`,
     env
   );
+}
+
+/**
+ * 봇이 채널/그룹의 관리자로 추가되었을 때 자동 처리
+ */
+async function handleChatMemberUpdate(myChatMember, env) {
+  try {
+    const chat = myChatMember.chat;
+    const newStatus = myChatMember.new_chat_member?.status;
+
+    // 관리자(administrator) 또는 멤버(member)로 추가되었을 때
+    if (newStatus === "administrator" || newStatus === "member") {
+      const channelId = chat.id.toString();
+      const channelTitle = chat.title || (chat.type === "channel" ? "비공개 채널" : "그룹방");
+      await addChannel(channelId, channelTitle, env);
+
+      await sendTelegramMessage(
+        `🎉 <b>[${escapeHtml(channelTitle)}] 채널 관리자로 등록되었습니다!</b>\n\n🆔 <b>채널 ID:</b> <code>${channelId}</code>\n\n이 채널이 뉴스 수신 대상에 자동 등록되었습니다! 앞으로 새 뉴스가 나오면 <b>내 개인방과 이 채널방으로 동시에</b> 알림이 발송됩니다.`,
+        env
+      );
+    }
+  } catch (err) {
+    console.error("Error handling chat member update:", err);
+  }
 }

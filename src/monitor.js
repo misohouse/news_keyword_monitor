@@ -98,6 +98,71 @@ export async function removeKeywords(keywordsToRemove, env) {
   return await saveKeywords(filtered, env);
 }
 
+const CHANNELS_KV_KEY = "config:channels"; // array of { id, title }
+
+/**
+ * 등록된 채널 목록 조회
+ */
+export async function getChannels(env) {
+  try {
+    const list = await env.NEWS_KV.get(CHANNELS_KV_KEY, "json");
+    if (Array.isArray(list)) return list;
+  } catch (err) {
+    console.error("Failed to get channels from KV:", err);
+  }
+  return [];
+}
+
+/**
+ * 채널 추가
+ */
+export async function addChannel(channelId, channelTitle = "", env) {
+  const current = await getChannels(env);
+  const idStr = channelId.toString();
+  const existing = current.find((c) => c.id === idStr);
+  let updated;
+  if (existing) {
+    updated = current.map((c) => (c.id === idStr ? { id: idStr, title: channelTitle || c.title } : c));
+  } else {
+    updated = [...current, { id: idStr, title: channelTitle || idStr }];
+  }
+  await env.NEWS_KV.put(CHANNELS_KV_KEY, JSON.stringify(updated));
+  return updated;
+}
+
+/**
+ * 채널 삭제
+ */
+export async function removeChannel(channelId, env) {
+  const current = await getChannels(env);
+  const idStr = channelId.toString();
+  const updated = current.filter((c) => c.id !== idStr);
+  await env.NEWS_KV.put(CHANNELS_KV_KEY, JSON.stringify(updated));
+  return updated;
+}
+
+/**
+ * 모든 채널 삭제
+ */
+export async function clearChannels(env) {
+  await env.NEWS_KV.put(CHANNELS_KV_KEY, JSON.stringify([]));
+  return [];
+}
+
+/**
+ * 알림을 전송할 모든 대상 Chat ID 조회 (내 개인방 + 등록된 채널들)
+ */
+export async function getAllTargetChatIds(env) {
+  const channels = await getChannels(env);
+  const targets = [{ id: env.TELEGRAM_CHAT_ID.toString(), title: "개인 알림방" }];
+  for (const ch of channels) {
+    if (!targets.some((t) => t.id === ch.id)) {
+      targets.push(ch);
+    }
+  }
+  return targets;
+}
+
 /**
  * 모든 키워드 삭제
  */
@@ -125,6 +190,7 @@ export async function checkAndNotify(env, options = {}) {
     return { totalChecked: 0, totalSent: 0, errors: [] };
   }
 
+  const allTargets = await getAllTargetChatIds(env);
   let totalSent = 0;
   let totalChecked = 0;
   const errors = [];
@@ -177,8 +243,8 @@ export async function checkAndNotify(env, options = {}) {
           }
         }
 
-        // 새 뉴스 전송
-        const success = await sendArticleNotification(article, keyword, env);
+        // 새 뉴스 전송 (개인방 + 등록된 모든 채널로 발송)
+        const success = await sendArticleNotification(article, keyword, env, allTargets);
         if (success) {
           sentForThisKeyword++;
           totalSent++;

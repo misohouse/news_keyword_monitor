@@ -34,8 +34,9 @@ export async function sendTelegramMessage(text, env, options = {}) {
 
 /**
  * 뉴스 알림 메시지 발송 (키워드, 제목, 일시, 주요내용 2~3줄, 링크)
+ * targetChatIds가 주어지면 등록된 모든 방(개인방 + 채널들)으로 동시 전송
  */
-export async function sendArticleNotification(article, keyword, env) {
+export async function sendArticleNotification(article, keyword, env, targetChatIds = null) {
   let sourceText = article.source;
   if (article.pressName) {
     sourceText = `${article.source} · ${article.pressName}`;
@@ -58,5 +59,19 @@ export async function sendArticleNotification(article, keyword, env) {
 
   message += `🔗 <a href="${article.link}">기사 바로가기</a>`;
 
-  return await sendTelegramMessage(message, env, { disable_web_page_preview: true });
+  const targets = Array.isArray(targetChatIds) && targetChatIds.length > 0
+    ? targetChatIds
+    : [{ id: env.TELEGRAM_CHAT_ID }];
+
+  let anySuccess = false;
+  for (const t of targets) {
+    const cid = typeof t === "object" ? t.id : t;
+    const ok = await sendTelegramMessage(message, env, {
+      chat_id: cid,
+      disable_web_page_preview: true,
+    });
+    if (ok) anySuccess = true;
+  }
+
+  return anySuccess;
 }
